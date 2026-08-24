@@ -119,8 +119,8 @@
       <div class="rounded-md px-1.5 py-1.5 text-xs text-muted-foreground">Settings</div>
     </aside>
 
-    <main id="main" class="relative min-w-0 flex-1 overflow-y-auto bg-zinc-50/60">
-      <div id="viewRoot"></div>
+    <main id="main" class="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-zinc-50/60">
+      <div id="viewRoot" class="flex min-h-0 flex-1 flex-col"></div>
     </main>
   </div>
 </div>
@@ -256,8 +256,8 @@ const STATIC_SIGNAL_GROUPS = [
       {value:'current_playbook', label:'current_playbook', type:'text'},
       /* Detection (is detected / is not detected) is reserved for Input guardrail
          topics only — a System signal is never a "detected" classifier, so these
-         are modeled as booleans instead (is true / is false). */
-      {value:'negative_sentiment', label:'Negative sentiment', type:'bool'},
+         are modeled as booleans instead (is true / is false). Negative sentiment
+         moved out of this group — see the Input guardrails group below. */
       {value:'positive_sentiment', label:'Positive sentiment', type:'bool'},
       {value:'unclassified_query', label:'Unclassified query', type:'bool'},
       {value:'unsupported_language', label:'Unsupported language', type:'bool'},
@@ -272,6 +272,9 @@ const STATIC_SIGNAL_GROUPS = [
     label: 'Input guardrails',
     items: [
       {value:'repeated_query', label:'Repeated query', type:'bool'},
+      // Backed by the "Negative sentiment" default guardrail on the Policy
+      // page (matching signalValue) — same pattern as the 13 named topics.
+      {value:'negative_sentiment', label:'Negative sentiment', type:'detect'},
       {value:'email_request_handling', label:'EMAIL REQUEST HANDLING', type:'detect'},
       {value:'assistive_device_damage_handling', label:'Assistive Device Damage Handling', type:'detect'},
       {value:'employment_jobs_or_hiring', label:'Employment, Jobs or Hiring', type:'detect'},
@@ -422,13 +425,12 @@ function blankRule(title, overrides){
     productionEnabled: false,
     isDefault: false,
     description: '',
-    conditionJoin: 'AND',
-    conditions: [ { signal:'', operator:'', value:'', repeated:false, repeatCount:1 } ],
+    conditions: [ { signal:'', operator:'', value:'', repeated:false, repeatCount:1, join:'AND' } ],
     actions: [ act('') ],
     stagingVersion: null,
     productionVersion: null,
     history: [], // newest first: {version, title, time, desc}
-    versions: {}, // version number -> frozen {conditions, actions, conditionJoin, maxTriggers} snapshot
+    versions: {}, // version number -> frozen {conditions, actions, maxTriggers} snapshot
     viewing: 'draft', // which card the panel currently shows: 'draft' | 'staging' | 'production'
     defaultUnlocked: false, // default rules only: has the user confirmed past the "are you sure" prompt?
   };
@@ -447,8 +449,12 @@ function blankRule(title, overrides){
   rule.viewing = defaultViewFor(rule);
   return rule;
 }
-function cond(signal, operator, repeated, repeatCount, value){
-  return {signal, operator, value: value || '', repeated: !!repeated, repeatCount: repeatCount || 1};
+function cond(signal, operator, repeated, repeatCount, value, join){
+  // `join` is the AND/OR operator connecting this condition to the one
+  // immediately before it — meaningless for the first condition in the list,
+  // but each condition carries its own so conditions can be freely
+  // added/removed/reordered without a separate parallel array to keep in sync.
+  return {signal, operator, value: value || '', repeated: !!repeated, repeatCount: repeatCount || 1, join: join || 'AND'};
 }
 function act(action, extra){
   return Object.assign({
@@ -481,7 +487,6 @@ function snapshotOf(item){
   return JSON.parse(JSON.stringify({
     conditions: item.conditions,
     actions: item.actions,
-    conditionJoin: item.conditionJoin,
     maxTriggers: item.maxTriggers,
   }));
 }
@@ -504,7 +509,6 @@ function currentViewData(){
     const conditionsEditable = editable && (!draftRule.isDefault || draftRule.defaultUnlocked);
     return {
       conditions: draftRule.conditions,
-      conditionJoin: draftRule.conditionJoin,
       title: draftRule.title,
       description: draftRule.description,
       triggerCondition: draftRule.triggerCondition,
@@ -517,10 +521,10 @@ function currentViewData(){
   const verNum = draftRule.viewing === 'staging' ? draftRule.stagingVersion : draftRule.productionVersion;
   const emptySnap = isGuardrail
     ? { title: draftRule.title, description: '', triggerCondition: '', actions: [], maxTriggers: 1 }
-    : { conditions: [], actions: [], conditionJoin: 'AND', maxTriggers: 1 };
+    : { conditions: [], actions: [], maxTriggers: 1 };
   const snap = (draftRule.versions && draftRule.versions[verNum]) || emptySnap;
   return {
-    conditions: snap.conditions, conditionJoin: snap.conditionJoin,
+    conditions: snap.conditions,
     title: snap.title, description: snap.description, triggerCondition: snap.triggerCondition,
     actions: snap.actions, maxTriggers: snap.maxTriggers,
     editable: false,
@@ -556,12 +560,14 @@ function initialRuleList(){
     }),
     blankRule('Negative sentiment', {
       id:'d3', updated:'1 min ago', isDefault:true,
-      conditions:[ cond('negative_sentiment','is_true') ],
+      // Sourced from the "Negative sentiment" Input guardrail rather than a
+      // standalone system check — same signal value the guardrail publishes,
+      // so it's categorized under Input guardrails and gets the Detection operator.
+      conditions:[ cond('negative_sentiment','is_detected') ],
       actions:[ act('') ],
     }),
     blankRule('Repeated query loop', {
       id:'d4', updated:'1 min ago', isDefault:true,
-      conditionJoin:'AND',
       conditions:[ cond('repeated_query','is_true'), cond('is_verified_user','is_false') ],
       actions:[ act('') ],
     }),
@@ -680,6 +686,7 @@ function initialGuardrailList(){
       act('trigger_topic', {topic:'language_not_supported'})),
     blankGuardrail('Negative sentiment', {
       id:'gd1', updated:'1 min ago', isDefault:true,
+      signalValue: 'negative_sentiment',
       description: 'Flags messages where the customer expresses clear frustration or dissatisfaction.',
       triggerCondition: 'Trigger when the customer’s message expresses clear negative sentiment, frustration, or dissatisfaction — e.g., "this is ridiculous", "I’m so annoyed", "worst service ever".\nDo NOT trigger on a neutral complaint stated calmly, or on sarcasm used positively.',
     }),
@@ -899,15 +906,18 @@ function setTriggerCondition(val){
 /* ---------------- draft rule editing ---------------- */
 function addCondition(){
   if(draftRule.conditions.length >= 4){ showToast('Maximum 4 conditions'); return; }
-  draftRule.conditions.push({signal:'', operator:'', value:'', repeated:false, repeatCount:1});
+  draftRule.conditions.push({signal:'', operator:'', value:'', repeated:false, repeatCount:1, join:'AND'});
   render();
 }
 function removeCondition(idx){
   draftRule.conditions.splice(idx,1);
   render();
 }
-function setJoin(j){
-  draftRule.conditionJoin = j;
+// Sets the AND/OR operator connecting condition[idx] to the one before it —
+// each junction between conditions is independently choosable, rather than
+// one join operator forced across every condition in the list.
+function setConditionJoin(idx, j){
+  draftRule.conditions[idx].join = j;
   render();
 }
 function setSignal(idx, val){
@@ -1046,6 +1056,13 @@ function confirmEditDefault(){
   render();
   showToast('Default rule unlocked for editing');
 }
+// True once a default item's live draft has actually diverged from the
+// configuration it shipped with — used to only show "Reset to default" once
+// there's something to reset, rather than as soon as it's merely unlocked.
+function isEditedFromDefault(item){
+  if(!item || !item.isDefault || !item.defaultSnapshot) return false;
+  return JSON.stringify(snapshotOf(item)) !== JSON.stringify(item.defaultSnapshot);
+}
 function resetToDefault(){
   if(!draftRule.defaultSnapshot) return;
   const snap = JSON.parse(JSON.stringify(draftRule.defaultSnapshot));
@@ -1055,7 +1072,6 @@ function resetToDefault(){
     draftRule.triggerCondition = snap.triggerCondition;
   } else {
     draftRule.conditions = snap.conditions;
-    draftRule.conditionJoin = snap.conditionJoin;
   }
   draftRule.actions = snap.actions;
   draftRule.maxTriggers = snap.maxTriggers;
@@ -1252,7 +1268,7 @@ function renderList(){
   }).join('');
 
   return `
-    <div class="px-6 pb-16 pt-5">
+    <div class="min-h-0 flex-1 overflow-y-auto px-6 pb-16 pt-5">
       <h1 class="text-[19px] font-semibold tracking-tight">Quality rules</h1>
       <p class="mb-4 mt-1 text-[12.5px] text-muted-foreground">Set up rules that monitor conversation signals and trigger automated actions.</p>
 
@@ -1365,7 +1381,7 @@ function renderGuardrailList(){
   }
 
   return `
-    <div class="px-6 pb-16 pt-5">
+    <div class="min-h-0 flex-1 overflow-y-auto px-6 pb-16 pt-5">
       <h1 class="text-[19px] font-semibold tracking-tight">Policy</h1>
       <p class="mb-3.5 mt-1 text-[12.5px] text-muted-foreground">Add checks on customer input to manage the AI Agent's response to restricted content.</p>
       <div class="mb-4 flex items-center gap-5 border-b">
@@ -1447,9 +1463,9 @@ function renderPanelCollapsed(){
   const railBtn = (active, pending, onclick) =>
     `flex h-8 w-8 items-center justify-center rounded-md ${active?'bg-accent text-foreground':'text-muted-foreground'} ${pending?'cursor-default opacity-40':'cursor-pointer hover:bg-accent/60'}" ${pending?'':`onclick="${onclick}"`}`;
   return `
-    <div class="relative z-10 w-16 flex-shrink-0">
+    <div class="relative z-10 flex w-16 flex-shrink-0 flex-col">
       <button class="${btnClass('secondary','icon')} absolute -right-3.5 top-2.5 z-20 h-6 w-6 rounded-full shadow" onclick="togglePanelCollapse()" title="Expand">${ICON.chevronRight}</button>
-      <div class="h-full overflow-y-auto border-r bg-white p-2 pt-4">
+      <div class="min-h-0 flex-1 overflow-y-auto border-r bg-white p-2 pt-4">
         <div class="mt-8 flex flex-col items-center gap-4">
           <span class="relative ${railBtn(v==='draft', false, "viewEnvCard('draft')")}" title="Draft">${ICON_DRAFT}</span>
           <span class="relative ${railBtn(v==='staging', stagingPending, "viewEnvCard('staging')")}" title="Staging">${ICON_ROCKET_OUTLINE}</span>
@@ -1460,9 +1476,9 @@ function renderPanelCollapsed(){
 }
 function renderPanelExpanded(){
   return `
-    <div class="relative z-10 w-[260px] flex-shrink-0">
+    <div class="relative z-10 flex w-[260px] flex-shrink-0 flex-col">
       <button class="${btnClass('secondary','icon')} absolute -right-3.5 top-2.5 z-20 h-6 w-6 rounded-full shadow" onclick="togglePanelCollapse()" title="Collapse">${ICON.chevronLeft}</button>
-      <div class="h-full overflow-y-auto border-r bg-white p-3.5">
+      <div class="min-h-0 flex-1 overflow-y-auto border-r bg-white p-3.5">
         ${renderEnvLadder()}
         ${renderVersionHistory()}
       </div>
@@ -1489,16 +1505,9 @@ function renderConditionBox(cnd, idx, total){
         placeholder="Value" value="${(cnd.value||'').replace(/"/g,'&quot;')}"
         oninput="setCondValue(${idx}, this.value)">` : '';
 
-  // Signal category badge — shown right on the picker's own trigger so it's
-  // visible at a glance (not just inside the open dropdown), and doubles as
-  // the hint for why the operator list below is restricted the way it is.
+  // Category is still used to restrict which operators apply (Detection is
+  // Input-guardrail-only) — just no longer surfaced as a visible badge.
   const sigCategory = signalCategoryLabel(cnd.signal);
-  const sigBadge = sigCategory ? (() => {
-    const isGuardrail = sigCategory === 'Input guardrails';
-    return `<span class="flex items-center gap-1 rounded-full border ${isGuardrail?'border-amber-200 bg-amber-50 text-amber-700':'border-violet-200 bg-violet-50 text-violet-700'} px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide">
-        <span class="h-1.5 w-1.5 rounded-full ${isGuardrail?'bg-amber-500':'bg-violet-500'}"></span>${isGuardrail?'Guardrail':'System'}
-      </span>`;
-  })() : '';
 
   const operatorGroups = operatorGroupsForSignal(cnd.signal);
 
@@ -1506,7 +1515,7 @@ function renderConditionBox(cnd, idx, total){
     <div class="relative mb-2.5 rounded-lg border bg-zinc-50/60 p-3.5 ${total > 1 ? 'pr-9' : ''}">
       ${closeBtn}
       <div class="mb-2.5 flex flex-wrap gap-2">
-        ${comboboxHTML('sig-'+idx, getSignalGroups(), cnd.signal, getSignalsFlat(), 'Select signal', 'flex-1 min-w-[180px]', sigBadge)}
+        ${comboboxHTML('sig-'+idx, getSignalGroups(), cnd.signal, getSignalsFlat(), 'Select signal', 'flex-1 min-w-[180px]')}
         ${comboboxHTML('op-'+idx, operatorGroups, cnd.operator, OPERATORS_FLAT, 'Operator', 'w-[200px] flex-shrink-0')}
         ${valueField}
       </div>
@@ -1629,11 +1638,13 @@ function renderDetail(){
   const conditionsHTML = view.conditions.map((c,idx)=>{
     const box = renderConditionBox(c, idx, view.conditions.length);
     if(idx === 0) return box;
+    // Each junction between conditions has its own independent AND/OR choice
+    // — picking OR here doesn't force every other junction in the list to OR.
     return `
       <div class="my-1 flex justify-center">
         <div class="inline-flex overflow-hidden rounded-md border">
-          <div class="cursor-pointer px-3.5 py-1 text-[11px] font-bold tracking-wide ${view.conditionJoin==='AND'?'bg-primary text-primary-foreground':'text-muted-foreground hover:bg-accent'}" onclick="setJoin('AND')">AND</div>
-          <div class="cursor-pointer px-3.5 py-1 text-[11px] font-bold tracking-wide ${view.conditionJoin==='OR'?'bg-primary text-primary-foreground':'text-muted-foreground hover:bg-accent'}" onclick="setJoin('OR')">OR</div>
+          <div class="cursor-pointer px-3.5 py-1 text-[11px] font-bold tracking-wide ${c.join==='OR'?'text-muted-foreground hover:bg-accent':'bg-primary text-primary-foreground'}" onclick="setConditionJoin(${idx}, 'AND')">AND</div>
+          <div class="cursor-pointer px-3.5 py-1 text-[11px] font-bold tracking-wide ${c.join==='OR'?'bg-primary text-primary-foreground':'text-muted-foreground hover:bg-accent'}" onclick="setConditionJoin(${idx}, 'OR')">OR</div>
         </div>
       </div>${box}`;
   }).join('');
@@ -1644,7 +1655,7 @@ function renderDetail(){
   if(draftRule.status === 'draft'){
     const deleteBtn = draftRule.isDefault ? '' :
       `<button class="${btnClass('outlineDanger','icon')}" onclick="openDeleteModal('${draftRule.id}')" title="Delete rule">${ICON.trash}</button>`;
-    const resetBtn = (draftRule.isDefault && draftRule.defaultUnlocked)
+    const resetBtn = isEditedFromDefault(draftRule)
       ? `<button class="${btnClass('secondary')}" onclick="resetToDefault()">Reset to default</button>` : '';
     bottomButtons = `${deleteBtn}${resetBtn}<button class="${btnClass('primary')}" onclick="moveToStaging()">Move to Staging</button>`;
   } else if(draftRule.status === 'staging'){
@@ -1693,7 +1704,7 @@ function renderDetail(){
     : (canRename ? 'Rename' : "Click \"Edit as Draft\" first to rename");
 
   return `
-    <div class="flex h-full">
+    <div class="flex min-h-0 flex-1">
       ${panelCollapsed ? renderPanelCollapsed() : renderPanelExpanded()}
       <div class="min-w-0 flex-1 overflow-y-auto px-6 pb-24 pt-4.5">
         <div class="mx-auto max-w-[800px]">
@@ -1713,12 +1724,8 @@ function renderDetail(){
 
         <div ${conditionsLocked?'data-locked="true"':''}>
           <div class="mb-3.5 rounded-lg border bg-white p-4 shadow-sm">
-            <div class="mb-0.5 flex flex-wrap items-center justify-between gap-2">
+            <div class="mb-0.5">
               <h4 class="text-[13px] font-semibold">Define rule</h4>
-              <div class="flex items-center gap-3 text-[10.5px] font-semibold uppercase tracking-wide text-muted-foreground">
-                <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-violet-500"></span>System signal</span>
-                <span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-amber-500"></span>Input guardrails</span>
-              </div>
             </div>
             <div class="mb-3 text-[11.5px] text-muted-foreground">Add one or more conditions this rule should watch for. Detection operators are only available for Input guardrail signals.</div>
             ${conditionsHTML}
@@ -1770,7 +1777,7 @@ function renderGuardrailDetail(){
   if(draftRule.status === 'draft'){
     const deleteBtn = draftRule.isDefault ? '' :
       `<button class="${btnClass('outlineDanger','icon')}" onclick="openDeleteModal('${draftRule.id}')" title="Delete guardrail">${ICON.trash}</button>`;
-    const resetBtn = (draftRule.isDefault && draftRule.defaultUnlocked)
+    const resetBtn = isEditedFromDefault(draftRule)
       ? `<button class="${btnClass('secondary')}" onclick="resetToDefault()">Reset to default</button>` : '';
     bottomButtons = `${deleteBtn}${resetBtn}<button class="${btnClass('primary')}" onclick="moveToStaging()">Move to Staging</button>`;
   } else if(draftRule.status === 'staging'){
@@ -1811,7 +1818,7 @@ function renderGuardrailDetail(){
   }
 
   return `
-    <div class="flex h-full">
+    <div class="flex min-h-0 flex-1">
       ${panelCollapsed ? renderPanelCollapsed() : renderPanelExpanded()}
       <div class="min-w-0 flex-1 overflow-y-auto px-6 pb-24 pt-4.5">
         <div class="mx-auto max-w-[800px]">
