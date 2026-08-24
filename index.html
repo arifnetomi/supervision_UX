@@ -1056,16 +1056,25 @@ function confirmEditDefault(){
   render();
   showToast('Default rule unlocked for editing');
 }
-// True once a default item's live draft has actually diverged from the
-// configuration it shipped with — used to only show "Reset to default" once
-// there's something to reset, rather than as soon as it's merely unlocked.
-function isEditedFromDefault(item){
+// True once a default item's live DEFINITION has actually diverged from what
+// it shipped with — conditions for a rule, or name/description/trigger text
+// for a guardrail. Deliberately ignores Actions: "Reset to default" only
+// ever restores the definition, never the actions, so an edited action alone
+// should never surface (or be undone by) this control.
+function isDefinitionEditedFromDefault(item){
   if(!item || !item.isDefault || !item.defaultSnapshot) return false;
-  return JSON.stringify(snapshotOf(item)) !== JSON.stringify(item.defaultSnapshot);
+  if(item.kind === 'guardrail'){
+    return item.title !== item.defaultSnapshot.title
+      || item.description !== item.defaultSnapshot.description
+      || item.triggerCondition !== item.defaultSnapshot.triggerCondition;
+  }
+  return JSON.stringify(item.conditions) !== JSON.stringify(item.defaultSnapshot.conditions);
 }
 function resetToDefault(){
   if(!draftRule.defaultSnapshot) return;
   const snap = JSON.parse(JSON.stringify(draftRule.defaultSnapshot));
+  // Only the definition resets — Actions and Max triggers are left exactly
+  // as the user configured them.
   if(draftRule.kind === 'guardrail'){
     draftRule.title = snap.title;
     draftRule.description = snap.description;
@@ -1073,8 +1082,6 @@ function resetToDefault(){
   } else {
     draftRule.conditions = snap.conditions;
   }
-  draftRule.actions = snap.actions;
-  draftRule.maxTriggers = snap.maxTriggers;
   draftRule.defaultUnlocked = false;
   render();
   showToast('Reset to the default configuration');
@@ -1651,13 +1658,17 @@ function renderDetail(){
 
   const actionsHTML = view.actions.map((a,idx)=>renderActionBlock(a, idx)).join('');
 
+  // Reset to default only ever touches the rule's conditions (never Actions),
+  // so the control lives on the "Define rule" card itself rather than in the
+  // bottom action bar — it only makes sense while that card is actually live.
+  const resetDefBtn = (draftRule.status === 'draft' && isDefinitionEditedFromDefault(draftRule))
+    ? `<button class="${btnClass('secondary','sm')}" onclick="resetToDefault()">Reset to default</button>` : '';
+
   let bottomButtons = '';
   if(draftRule.status === 'draft'){
     const deleteBtn = draftRule.isDefault ? '' :
       `<button class="${btnClass('outlineDanger','icon')}" onclick="openDeleteModal('${draftRule.id}')" title="Delete rule">${ICON.trash}</button>`;
-    const resetBtn = isEditedFromDefault(draftRule)
-      ? `<button class="${btnClass('secondary')}" onclick="resetToDefault()">Reset to default</button>` : '';
-    bottomButtons = `${deleteBtn}${resetBtn}<button class="${btnClass('primary')}" onclick="moveToStaging()">Move to Staging</button>`;
+    bottomButtons = `${deleteBtn}<button class="${btnClass('primary')}" onclick="moveToStaging()">Move to Staging</button>`;
   } else if(draftRule.status === 'staging'){
     bottomButtons = `
       <button class="${btnClass('secondary')}" onclick="editAsDraft()">Edit as Draft</button>
@@ -1724,8 +1735,9 @@ function renderDetail(){
 
         <div ${conditionsLocked?'data-locked="true"':''}>
           <div class="mb-3.5 rounded-lg border bg-white p-4 shadow-sm">
-            <div class="mb-0.5">
+            <div class="mb-0.5 flex items-center justify-between gap-2">
               <h4 class="text-[13px] font-semibold">Define rule</h4>
+              ${resetDefBtn}
             </div>
             <div class="mb-3 text-[11.5px] text-muted-foreground">Add one or more conditions this rule should watch for. Detection operators are only available for Input guardrail signals.</div>
             ${conditionsHTML}
@@ -1773,13 +1785,17 @@ function renderGuardrailDetail(){
   const actionsHTML = view.actions.map((a,idx)=>renderActionBlock(a, idx)).join('');
   const triggerLen = (view.triggerCondition || '').length;
 
+  // Reset to default only ever touches the guardrail's Name/Description/
+  // Trigger condition (never Actions), so it lives on that definition card
+  // itself rather than in the bottom action bar.
+  const resetDefBtn = (draftRule.status === 'draft' && isDefinitionEditedFromDefault(draftRule))
+    ? `<button class="${btnClass('secondary','sm')}" onclick="resetToDefault()">Reset to default</button>` : '';
+
   let bottomButtons = '';
   if(draftRule.status === 'draft'){
     const deleteBtn = draftRule.isDefault ? '' :
       `<button class="${btnClass('outlineDanger','icon')}" onclick="openDeleteModal('${draftRule.id}')" title="Delete guardrail">${ICON.trash}</button>`;
-    const resetBtn = isEditedFromDefault(draftRule)
-      ? `<button class="${btnClass('secondary')}" onclick="resetToDefault()">Reset to default</button>` : '';
-    bottomButtons = `${deleteBtn}${resetBtn}<button class="${btnClass('primary')}" onclick="moveToStaging()">Move to Staging</button>`;
+    bottomButtons = `${deleteBtn}<button class="${btnClass('primary')}" onclick="moveToStaging()">Move to Staging</button>`;
   } else if(draftRule.status === 'staging'){
     bottomButtons = `
       <button class="${btnClass('secondary')}" onclick="editAsDraft()">Edit as Draft</button>
@@ -1835,7 +1851,10 @@ function renderGuardrailDetail(){
 
         <div ${conditionsLocked?'data-locked="true"':''}>
           <div class="mb-3.5 rounded-lg border bg-white p-4 shadow-sm">
-            <label class="mb-1.5 block text-[12.5px] font-semibold">Name</label>
+            <div class="mb-1.5 flex items-center justify-between gap-2">
+              <label class="block text-[12.5px] font-semibold">Name</label>
+              ${resetDefBtn}
+            </div>
             <input class="mb-3 h-9 w-full rounded-md border border-input bg-white px-3 text-[13px] shadow-sm outline-none focus:ring-1 focus:ring-ring" value="${(view.title||'').replace(/"/g,'&quot;')}" oninput="setGuardrailName(this.value)">
             <input class="h-9 w-full rounded-md border border-input bg-white px-3 text-[12.5px] text-muted-foreground shadow-sm outline-none focus:ring-1 focus:ring-ring" placeholder="This is an input description." value="${(view.description||'').replace(/"/g,'&quot;')}" oninput="setGuardrailDescription(this.value)">
           </div>
