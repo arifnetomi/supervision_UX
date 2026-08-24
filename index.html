@@ -119,8 +119,8 @@
       <div class="rounded-md px-1.5 py-1.5 text-xs text-muted-foreground">Settings</div>
     </aside>
 
-    <main id="main" class="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-zinc-50/60">
-      <div id="viewRoot" class="flex min-h-0 flex-1 flex-col"></div>
+    <main id="main" class="relative min-w-0 flex-1 overflow-y-auto bg-zinc-50/60">
+      <div id="viewRoot"></div>
     </main>
   </div>
 </div>
@@ -1252,7 +1252,7 @@ function renderList(){
   }).join('');
 
   return `
-    <div class="min-h-0 flex-1 overflow-y-auto px-6 pb-16 pt-5">
+    <div class="px-6 pb-16 pt-5">
       <h1 class="text-[19px] font-semibold tracking-tight">Quality rules</h1>
       <p class="mb-4 mt-1 text-[12.5px] text-muted-foreground">Set up rules that monitor conversation signals and trigger automated actions.</p>
 
@@ -1365,7 +1365,7 @@ function renderGuardrailList(){
   }
 
   return `
-    <div class="min-h-0 flex-1 overflow-y-auto px-6 pb-16 pt-5">
+    <div class="px-6 pb-16 pt-5">
       <h1 class="text-[19px] font-semibold tracking-tight">Policy</h1>
       <p class="mb-3.5 mt-1 text-[12.5px] text-muted-foreground">Add checks on customer input to manage the AI Agent's response to restricted content.</p>
       <div class="mb-4 flex items-center gap-5 border-b">
@@ -1447,9 +1447,9 @@ function renderPanelCollapsed(){
   const railBtn = (active, pending, onclick) =>
     `flex h-8 w-8 items-center justify-center rounded-md ${active?'bg-accent text-foreground':'text-muted-foreground'} ${pending?'cursor-default opacity-40':'cursor-pointer hover:bg-accent/60'}" ${pending?'':`onclick="${onclick}"`}`;
   return `
-    <div class="relative z-10 flex w-16 flex-shrink-0 flex-col">
+    <div class="relative z-10 w-16 flex-shrink-0">
       <button class="${btnClass('secondary','icon')} absolute -right-3.5 top-2.5 z-20 h-6 w-6 rounded-full shadow" onclick="togglePanelCollapse()" title="Expand">${ICON.chevronRight}</button>
-      <div class="min-h-0 flex-1 overflow-y-auto border-r bg-white p-2 pt-4">
+      <div class="h-full overflow-y-auto border-r bg-white p-2 pt-4">
         <div class="mt-8 flex flex-col items-center gap-4">
           <span class="relative ${railBtn(v==='draft', false, "viewEnvCard('draft')")}" title="Draft">${ICON_DRAFT}</span>
           <span class="relative ${railBtn(v==='staging', stagingPending, "viewEnvCard('staging')")}" title="Staging">${ICON_ROCKET_OUTLINE}</span>
@@ -1460,9 +1460,9 @@ function renderPanelCollapsed(){
 }
 function renderPanelExpanded(){
   return `
-    <div class="relative z-10 flex w-[260px] flex-shrink-0 flex-col">
+    <div class="relative z-10 w-[260px] flex-shrink-0">
       <button class="${btnClass('secondary','icon')} absolute -right-3.5 top-2.5 z-20 h-6 w-6 rounded-full shadow" onclick="togglePanelCollapse()" title="Collapse">${ICON.chevronLeft}</button>
-      <div class="min-h-0 flex-1 overflow-y-auto border-r bg-white p-3.5">
+      <div class="h-full overflow-y-auto border-r bg-white p-3.5">
         ${renderEnvLadder()}
         ${renderVersionHistory()}
       </div>
@@ -1693,7 +1693,7 @@ function renderDetail(){
     : (canRename ? 'Rename' : "Click \"Edit as Draft\" first to rename");
 
   return `
-    <div class="flex min-h-0 flex-1">
+    <div class="flex h-full">
       ${panelCollapsed ? renderPanelCollapsed() : renderPanelExpanded()}
       <div class="min-w-0 flex-1 overflow-y-auto px-6 pb-24 pt-4.5">
         <div class="mx-auto max-w-[800px]">
@@ -1811,7 +1811,7 @@ function renderGuardrailDetail(){
   }
 
   return `
-    <div class="flex min-h-0 flex-1">
+    <div class="flex h-full">
       ${panelCollapsed ? renderPanelCollapsed() : renderPanelExpanded()}
       <div class="min-w-0 flex-1 overflow-y-auto px-6 pb-24 pt-4.5">
         <div class="mx-auto max-w-[800px]">
