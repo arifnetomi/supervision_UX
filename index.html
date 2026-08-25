@@ -356,10 +356,10 @@ function operatorValueKind(opValue){
   return null;
 }
 
-/* The "Repeated" (trigger only after it's happened N times) toggle only makes
-   sense for Detection operators — is-true/is-false, number and text
-   comparisons describe a single point-in-time state, not something that
-   accumulates across a conversation. */
+/* The "Consecutive occurrence" (trigger only after it's happened N times in a
+   row) toggle only makes sense for Detection operators — is-true/is-false,
+   number and text comparisons describe a single point-in-time state, not
+   something that accumulates across a conversation. */
 function isDetectionOperator(opValue){
   return opValue === 'is_detected' || opValue === 'is_not_detected';
 }
@@ -396,15 +396,14 @@ const GROUP_ACCENT = {
   'Text': 'bg-zinc-500',
 };
 /* Matches the real "Action on violation" spec: Skip (no action), Trigger
-   topic, Send message, Set variable, Disable chat UI text. "Set variable"
-   and "Set custom field" below are separate, always-available checkboxes
-   that apply regardless of which of these five is chosen. */
+   topic, Send message, Disable chat UI text. "Set variable" and "Set custom
+   field" below are separate, always-available checkboxes that apply
+   regardless of which of these four is chosen. */
 const ACTIONS = [
   {value:'', label:'Select action'},
   {value:'skip', label:'Skip (no action)'},
   {value:'trigger_topic', label:'Trigger topic'},
   {value:'send_message', label:'Send message'},
-  {value:'set_variable', label:'Set variable'},
   {value:'disable_chat_ui', label:'Disable chat UI text'},
 ];
 const TOPICS = [
@@ -466,7 +465,6 @@ function act(action, extra){
     topic: '',                 // Trigger topic
     messages: [''],            // Send message — one or more text variations
     shuffleVariations: false,  // Send message — randomly rotate between variations
-    mainVariable: '', mainValue: '', // Set variable (primary action)
     setVariable: false, varName: '', varValue: '',       // always-available "Set variable" checkbox
     setCustomField: false, cfName: '', cfValue: '',       // always-available "Set custom field" checkbox
   }, extra || {});
@@ -958,8 +956,8 @@ function setOperator(idx, val){
   const c = draftRule.conditions[idx];
   c.operator = val;
   if(!operatorValueKind(val)) c.value = '';
-  // "Repeated" is Detection-only — clear it the moment the operator moves
-  // away from Detection so a stale threshold never lingers unseen.
+  // "Consecutive occurrence" is Detection-only — clear it the moment the
+  // operator moves away from Detection so a stale threshold never lingers unseen.
   if(!isDetectionOperator(val)){ c.repeated = false; c.repeatCount = 1; }
   render();
 }
@@ -1012,12 +1010,6 @@ function removeMessageVariation(idx, vIdx){
 function toggleShuffleVariations(idx){
   draftRule.actions[idx].shuffleVariations = !draftRule.actions[idx].shuffleVariations;
   render();
-}
-function setMainVariable(idx, val){
-  draftRule.actions[idx].mainVariable = val;
-}
-function setMainValue(idx, val){
-  draftRule.actions[idx].mainValue = val;
 }
 function toggleSetVariable(idx){
   draftRule.actions[idx].setVariable = !draftRule.actions[idx].setVariable;
@@ -1531,7 +1523,7 @@ function renderConditionBox(cnd, idx, total){
         <div class="w-7 text-center text-[12.5px] font-semibold">${cnd.repeatCount}</div>
         <button class="flex h-6 w-6 items-center justify-center text-muted-foreground hover:bg-accent" onclick="changeRepeatCount(${idx},1)">${ICON.plus}</button>
       </div>
-      time${cnd.repeatCount>1?'s':''} in this conversation
+      consecutive time${cnd.repeatCount>1?'s':''} in a row
     </div>` : '';
 
   const valueKind = operatorValueKind(cnd.operator);
@@ -1559,8 +1551,8 @@ function renderConditionBox(cnd, idx, total){
       <div class="flex items-start gap-2">
         ${checkboxHTML(cnd.repeated, `toggleRepeated(${idx})`)}
         <div class="cursor-pointer" onclick="toggleRepeated(${idx})">
-          <b class="block text-[12.5px] font-semibold">Repeated</b>
-          <span class="text-[11px] text-muted-foreground">Only trigger when this condition is met more than once in the conversation</span>
+          <b class="block text-[12.5px] font-semibold">Consecutive occurrence</b>
+          <span class="text-[11px] text-muted-foreground">Only trigger when this condition is met multiple times in a row</span>
         </div>
       </div>
       ${repeatMore}` : ''}
@@ -1626,20 +1618,6 @@ function renderActionBlock(a, idx){
         <div class="flex items-center gap-2 border-t pt-2.5">
           ${switchHTML(a.shuffleVariations, `toggleShuffleVariations(${idx})`)}
           <span class="text-[12px] text-muted-foreground">Shuffle Variations (${a.messages.length})</span>
-        </div>
-      </div>`;
-  } else if(a.action === 'set_variable'){
-    primaryDetail = `
-      <div class="mt-3 rounded-lg border bg-white p-3.5">
-        <div class="mb-2.5 text-[11.5px] text-muted-foreground">Select at least one variable</div>
-        <div class="flex flex-wrap gap-2.5">
-          <select class="h-9 flex-1 min-w-[160px] rounded-md border border-input bg-white px-3 text-[13px] shadow-sm outline-none focus:ring-1 focus:ring-ring ${!a.mainVariable?'text-muted-foreground':''}" onchange="setMainVariable(${idx}, this.value)">
-            <option value="">Select variable</option>
-            <option value="last_topic" ${a.mainVariable==='last_topic'?'selected':''}>last_topic</option>
-            <option value="escalation_flag" ${a.mainVariable==='escalation_flag'?'selected':''}>escalation_flag</option>
-            <option value="sentiment_flag" ${a.mainVariable==='sentiment_flag'?'selected':''}>sentiment_flag</option>
-          </select>
-          <input class="h-9 flex-1 min-w-[140px] rounded-md border border-input bg-white px-3 text-[13px] shadow-sm outline-none focus:ring-1 focus:ring-ring" placeholder="Value" value="${(a.mainValue||'').replace(/"/g,'&quot;')}" oninput="setMainValue(${idx}, this.value)">
         </div>
       </div>`;
   } else if(a.action === 'disable_chat_ui'){
