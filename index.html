@@ -60,6 +60,13 @@
     </nav>
     <div class="flex-1"></div>
     <div class="flex flex-col items-start rounded-lg border px-2.5 py-1 leading-tight">
+      <div class="text-[10px] text-muted-foreground">Concept</div>
+      <select id="conceptSelect" class="h-5 rounded bg-transparent px-0.5 text-xs font-semibold outline-none focus:ring-1 focus:ring-ring" style="border:none" onchange="setUIConcept(this.value)">
+        <option value="concept1">1 — Current</option>
+        <option value="concept2">2 — Simplified</option>
+      </select>
+    </div>
+    <div class="flex flex-col items-start rounded-lg border px-2.5 py-1 leading-tight">
       <div class="flex items-center gap-1.5 text-xs font-semibold"><span class="h-1.5 w-1.5 rounded-full bg-amber-500"></span>DEV</div>
       <div class="text-[10px] text-muted-foreground">Active build · UX draft</div>
     </div>
@@ -356,10 +363,12 @@ function operatorValueKind(opValue){
   return null;
 }
 
-/* The "Consecutive occurrence" (trigger only after it's happened N times in a
-   row) toggle only makes sense for Detection operators — is-true/is-false,
-   number and text comparisons describe a single point-in-time state, not
-   something that accumulates across a conversation. */
+/* The "Repeated" (trigger only after it's happened N times) toggle only makes
+   sense for Detection operators — is-true/is-false, number and text
+   comparisons describe a single point-in-time state, not something that
+   accumulates across a conversation. Once enabled, it further asks whether
+   those N times need to be anywhere in the conversation ('any') or
+   back-to-back ('consecutive') — see repeatScope. */
 function isDetectionOperator(opValue){
   return opValue === 'is_detected' || opValue === 'is_not_detected';
 }
@@ -428,7 +437,12 @@ function blankRule(title, overrides){
     description: '',
     conditionMode: 'builder', // 'builder' (visual signal/operator conditions) | 'expression' (raw text/AQL)
     expression: '', // raw text used when conditionMode === 'expression'
-    conditions: [ { signal:'', operator:'', value:'', repeated:false, repeatCount:1, join:'AND' } ],
+    conditions: [ { signal:'', operator:'', value:'', repeated:false, repeatCount:1, repeatScope:'any', join:'AND' } ],
+    // Concept 2's grouped condition model: "all" (AND together) and "any"
+    // (OR together), combined by a single top-level groupJoin — independent
+    // of `conditions` above the same way `expression` is, so switching the
+    // header's Concept dropdown never loses either representation's edits.
+    conditionGroups: null, // synthesized below from `conditions` unless overridden
     actions: [ act('') ],
     stagingVersion: null,
     productionVersion: null,
@@ -438,6 +452,19 @@ function blankRule(title, overrides){
     defaultUnlocked: false, // default rules only: has the user confirmed past the "are you sure" prompt?
   };
   const rule = Object.assign(base, overrides || {});
+  // Unless the caller supplied its own conditionGroups, seed Concept 2's
+  // view from the same conditions Concept 1 ships with, so both concepts
+  // start in sync for a given rule (they can then diverge freely). Concept 2
+  // is a list of condition "blocks" (sections) — each one is either an
+  // ALL-of (AND) or ANY-of (OR) block, and blocks chain together via their
+  // own `join`, same convention as the `join` field on a flat condition.
+  if(!rule.conditionGroups){
+    rule.conditionGroups = {
+      sections: [
+        { mode: 'all', join: 'AND', conditions: rule.conditions.map(c => ({ signal:c.signal, operator:c.operator, value:c.value, repeated:c.repeated, repeatCount:c.repeatCount, repeatScope:c.repeatScope||'any' })) },
+      ],
+    };
+  }
   rule.maxTriggers = rule.actions.length;
   // If seed data ships with a stagingVersion but no snapshot for it yet, freeze
   // the current conditions/actions as that version's content.
@@ -457,7 +484,12 @@ function cond(signal, operator, repeated, repeatCount, value, join){
   // immediately before it — meaningless for the first condition in the list,
   // but each condition carries its own so conditions can be freely
   // added/removed/reordered without a separate parallel array to keep in sync.
-  return {signal, operator, value: value || '', repeated: !!repeated, repeatCount: repeatCount || 1, join: join || 'AND'};
+  return {signal, operator, value: value || '', repeated: !!repeated, repeatCount: repeatCount || 1, repeatScope: 'any', join: join || 'AND'};
+}
+// Shared "nothing defined yet" shape for Concept 2's condition blocks — one
+// empty ALL-of block, used wherever a rule/snapshot has no conditionGroups.
+function emptyConditionGroups(){
+  return { sections: [ { mode:'all', join:'AND', conditions:[] } ] };
 }
 function act(action, extra){
   return Object.assign({
@@ -490,6 +522,7 @@ function snapshotOf(item){
     conditions: item.conditions,
     conditionMode: item.conditionMode,
     expression: item.expression,
+    conditionGroups: item.conditionGroups,
     actions: item.actions,
     maxTriggers: item.maxTriggers,
   }));
@@ -515,6 +548,7 @@ function currentViewData(){
       conditions: draftRule.conditions,
       conditionMode: draftRule.conditionMode,
       expression: draftRule.expression,
+      conditionGroups: draftRule.conditionGroups,
       title: draftRule.title,
       description: draftRule.description,
       triggerCondition: draftRule.triggerCondition,
@@ -527,12 +561,13 @@ function currentViewData(){
   const verNum = draftRule.viewing === 'staging' ? draftRule.stagingVersion : draftRule.productionVersion;
   const emptySnap = isGuardrail
     ? { title: draftRule.title, description: '', triggerCondition: '', actions: [], maxTriggers: 1 }
-    : { conditions: [], conditionMode: 'builder', expression: '', actions: [], maxTriggers: 1 };
+    : { conditions: [], conditionMode: 'builder', expression: '', conditionGroups: emptyConditionGroups(), actions: [], maxTriggers: 1 };
   const snap = (draftRule.versions && draftRule.versions[verNum]) || emptySnap;
   return {
     conditions: snap.conditions,
     conditionMode: snap.conditionMode || 'builder',
     expression: snap.expression,
+    conditionGroups: snap.conditionGroups || emptyConditionGroups(),
     title: snap.title, description: snap.description, triggerCondition: snap.triggerCondition,
     actions: snap.actions, maxTriggers: snap.maxTriggers,
     editable: false,
@@ -724,6 +759,11 @@ let draftRule = null; // reference to whichever rule/guardrail is open right now
 let vhOpen = false;
 let ruleToDelete = null;
 let panelCollapsed = false;
+// Global design-variant switcher (header "Concept" dropdown) — 'concept1' is
+// the existing condition builder; 'concept2' is the simplified alternative.
+// Applies only to the editable "Define rule" card; read-only Staging/
+// Production snapshots already render as a plain summary either way.
+let uiConcept = 'concept1';
 
 function loadRules(list){
   rulesMap = {};
@@ -897,6 +937,10 @@ function setGuardrailSubTab(tab){
   guardrailSubTab = tab;
   render();
 }
+function setUIConcept(val){
+  uiConcept = val;
+  render();
+}
 
 /* ---------------- draft guardrail editing ---------------- */
 // These skip render() the same way the action-text mutators do, so typing
@@ -914,7 +958,7 @@ function setTriggerCondition(val){
 /* ---------------- draft rule editing ---------------- */
 function addCondition(){
   if(draftRule.conditions.length >= 4){ showToast('Maximum 4 conditions'); return; }
-  draftRule.conditions.push({signal:'', operator:'', value:'', repeated:false, repeatCount:1, join:'AND'});
+  draftRule.conditions.push({signal:'', operator:'', value:'', repeated:false, repeatCount:1, repeatScope:'any', join:'AND'});
   render();
 }
 function removeCondition(idx){
@@ -949,6 +993,7 @@ function setSignal(idx, val){
     c.value = '';
     c.repeated = false;
     c.repeatCount = 1;
+    c.repeatScope = 'any';
   }
   render();
 }
@@ -956,9 +1001,9 @@ function setOperator(idx, val){
   const c = draftRule.conditions[idx];
   c.operator = val;
   if(!operatorValueKind(val)) c.value = '';
-  // "Consecutive occurrence" is Detection-only — clear it the moment the
-  // operator moves away from Detection so a stale threshold never lingers unseen.
-  if(!isDetectionOperator(val)){ c.repeated = false; c.repeatCount = 1; }
+  // "Repeated" is Detection-only — clear it the moment the operator moves
+  // away from Detection so a stale threshold never lingers unseen.
+  if(!isDetectionOperator(val)){ c.repeated = false; c.repeatCount = 1; c.repeatScope = 'any'; }
   render();
 }
 function setCondValue(idx, val){
@@ -968,8 +1013,89 @@ function toggleRepeated(idx){
   draftRule.conditions[idx].repeated = !draftRule.conditions[idx].repeated;
   render();
 }
+// 'any' = repeated anywhere across the whole conversation, 'consecutive' =
+// repeated back-to-back — the two ways "Repeated" can be satisfied.
+function setRepeatScope(idx, scope){
+  draftRule.conditions[idx].repeatScope = scope;
+  render();
+}
 function changeRepeatCount(idx, delta){
   const c = draftRule.conditions[idx];
+  c.repeatCount = Math.max(1, c.repeatCount + delta);
+  render();
+}
+
+/* ---------------- Concept 2: block-based condition editing ----------------
+   A rule's Concept 2 definition is a list of condition "blocks" (sections).
+   Each block is independently either an ALL-of (AND) or ANY-of (OR) block —
+   user-selectable, not fixed — and holds its own list of conditions. Blocks
+   themselves chain together via their own `join`, same convention as the
+   `join` field on a flat Concept 1 condition. Kept as a separate, parallel
+   data structure (like `expression` is to `conditions`) so switching Concept
+   in the header never loses either representation's edits. */
+function addConditionSection(){
+  const sections = draftRule.conditionGroups.sections;
+  if(sections.length >= 4){ showToast('Maximum 4 condition blocks'); return; }
+  sections.push({ mode:'all', join:'AND', conditions:[{signal:'', operator:'', value:'', repeated:false, repeatCount:1, repeatScope:'any'}] });
+  render();
+}
+function removeConditionSection(sIdx){
+  const sections = draftRule.conditionGroups.sections;
+  if(sections.length <= 1) return; // always keep at least one block
+  sections.splice(sIdx, 1);
+  render();
+}
+function setSectionMode(sIdx, mode){
+  draftRule.conditionGroups.sections[sIdx].mode = mode;
+  render();
+}
+function setSectionJoin(sIdx, j){
+  draftRule.conditionGroups.sections[sIdx].join = j;
+  render();
+}
+function addSectionCondition(sIdx){
+  const list = draftRule.conditionGroups.sections[sIdx].conditions;
+  if(list.length >= 4){ showToast('Maximum 4 conditions'); return; }
+  list.push({signal:'', operator:'', value:'', repeated:false, repeatCount:1, repeatScope:'any'});
+  render();
+}
+function removeSectionCondition(sIdx, cIdx){
+  draftRule.conditionGroups.sections[sIdx].conditions.splice(cIdx, 1);
+  render();
+}
+function setSectionCondSignal(sIdx, cIdx, val){
+  const c = draftRule.conditionGroups.sections[sIdx].conditions[cIdx];
+  c.signal = val;
+  if(!operatorStillValidForSignal(val, c.operator)){
+    c.operator = '';
+    c.value = '';
+    c.repeated = false;
+    c.repeatCount = 1;
+    c.repeatScope = 'any';
+  }
+  render();
+}
+function setSectionCondOperator(sIdx, cIdx, val){
+  const c = draftRule.conditionGroups.sections[sIdx].conditions[cIdx];
+  c.operator = val;
+  if(!operatorValueKind(val)) c.value = '';
+  if(!isDetectionOperator(val)){ c.repeated = false; c.repeatCount = 1; c.repeatScope = 'any'; }
+  render();
+}
+function setSectionCondValue(sIdx, cIdx, val){
+  draftRule.conditionGroups.sections[sIdx].conditions[cIdx].value = val;
+}
+function toggleSectionCondRepeated(sIdx, cIdx){
+  const c = draftRule.conditionGroups.sections[sIdx].conditions[cIdx];
+  c.repeated = !c.repeated;
+  render();
+}
+function setSectionCondRepeatScope(sIdx, cIdx, scope){
+  draftRule.conditionGroups.sections[sIdx].conditions[cIdx].repeatScope = scope;
+  render();
+}
+function changeSectionCondRepeatCount(sIdx, cIdx, delta){
+  const c = draftRule.conditionGroups.sections[sIdx].conditions[cIdx];
   c.repeatCount = Math.max(1, c.repeatCount + delta);
   render();
 }
@@ -1086,7 +1212,8 @@ function isDefinitionEditedFromDefault(item){
   }
   return JSON.stringify(item.conditions) !== JSON.stringify(item.defaultSnapshot.conditions)
     || (item.conditionMode || 'builder') !== (item.defaultSnapshot.conditionMode || 'builder')
-    || (item.expression || '') !== (item.defaultSnapshot.expression || '');
+    || (item.expression || '') !== (item.defaultSnapshot.expression || '')
+    || JSON.stringify(item.conditionGroups) !== JSON.stringify(item.defaultSnapshot.conditionGroups);
 }
 function resetToDefault(){
   if(!draftRule.defaultSnapshot) return;
@@ -1101,6 +1228,7 @@ function resetToDefault(){
     draftRule.conditions = snap.conditions;
     draftRule.conditionMode = snap.conditionMode || 'builder';
     draftRule.expression = snap.expression || '';
+    draftRule.conditionGroups = snap.conditionGroups || emptyConditionGroups();
   }
   draftRule.defaultUnlocked = false;
   render();
@@ -1198,8 +1326,17 @@ function comboboxHTML(comboId, groups, currentVal, flatLookup, placeholder, widt
     </div>`;
 }
 function comboSelect(comboId, value){
-  const [kind, idxStr] = comboId.split('-');
-  const idx = parseInt(idxStr, 10);
+  const parts = comboId.split('-');
+  const kind = parts[0];
+  // Concept 2's block condition combos are namespaced 'sig2-{sectionIdx}-{condIdx}'
+  // / 'op2-{sectionIdx}-{condIdx}' since they need a section as well as an index.
+  if(kind === 'sig2' || kind === 'op2'){
+    const sIdx = parseInt(parts[1], 10), cIdx = parseInt(parts[2], 10);
+    if(kind === 'sig2') setSectionCondSignal(sIdx, cIdx, value);
+    else setSectionCondOperator(sIdx, cIdx, value);
+    return;
+  }
+  const idx = parseInt(parts[1], 10);
   if(kind === 'sig') setSignal(idx, value);
   else if(kind === 'op') setOperator(idx, value);
   else if(kind === 'act') setAction(idx, value);
@@ -1515,15 +1652,29 @@ function renderPanelExpanded(){
 function renderConditionBox(cnd, idx, total){
   const closeBtn = total > 1
     ? `<button class="absolute right-2.5 top-2.5 z-20 flex h-5 w-5 items-center justify-center rounded border bg-white text-muted-foreground shadow-sm hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive" onclick="removeCondition(${idx})">${ICON.x}</button>` : '';
+  const REPEAT_SCOPES = [
+    {value:'any', label:'Repeated more than once in the whole conversation'},
+    {value:'consecutive', label:'Repeated consecutively for more than once'},
+  ];
   const repeatMore = cnd.repeated ? `
-    <div class="ml-6 mt-2.5 flex items-center gap-2 text-[12px] text-muted-foreground">
-      More than
-      <div class="inline-flex items-center overflow-hidden rounded-md border">
-        <button class="flex h-6 w-6 items-center justify-center text-muted-foreground hover:bg-accent" onclick="changeRepeatCount(${idx},-1)">${ICON.minus}</button>
-        <div class="w-7 text-center text-[12.5px] font-semibold">${cnd.repeatCount}</div>
-        <button class="flex h-6 w-6 items-center justify-center text-muted-foreground hover:bg-accent" onclick="changeRepeatCount(${idx},1)">${ICON.plus}</button>
+    <div class="ml-6 mt-2.5 flex flex-col gap-1.5">
+      ${REPEAT_SCOPES.map(o => {
+        const sel = (cnd.repeatScope || 'any') === o.value;
+        return `
+        <div class="flex cursor-pointer items-center gap-2" onclick="setRepeatScope(${idx}, '${o.value}')">
+          <span class="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border ${sel?'border-primary':'border-input bg-white'}">${sel?'<span class="h-2 w-2 rounded-full bg-primary"></span>':''}</span>
+          <span class="text-[12px] ${sel?'font-medium text-foreground':'text-muted-foreground'}">${o.label}</span>
+        </div>`;
+      }).join('')}
+      <div class="mt-1 flex items-center gap-2 text-[12px] text-muted-foreground">
+        More than
+        <div class="inline-flex items-center overflow-hidden rounded-md border">
+          <button class="flex h-6 w-6 items-center justify-center text-muted-foreground hover:bg-accent" onclick="changeRepeatCount(${idx},-1)">${ICON.minus}</button>
+          <div class="w-7 text-center text-[12.5px] font-semibold">${cnd.repeatCount}</div>
+          <button class="flex h-6 w-6 items-center justify-center text-muted-foreground hover:bg-accent" onclick="changeRepeatCount(${idx},1)">${ICON.plus}</button>
+        </div>
+        ${cnd.repeatScope === 'consecutive' ? `consecutive time${cnd.repeatCount>1?'s':''} in a row` : `time${cnd.repeatCount>1?'s':''} in this conversation`}
       </div>
-      consecutive time${cnd.repeatCount>1?'s':''} in a row
     </div>` : '';
 
   const valueKind = operatorValueKind(cnd.operator);
@@ -1551,12 +1702,187 @@ function renderConditionBox(cnd, idx, total){
       <div class="flex items-start gap-2">
         ${checkboxHTML(cnd.repeated, `toggleRepeated(${idx})`)}
         <div class="cursor-pointer" onclick="toggleRepeated(${idx})">
-          <b class="block text-[12.5px] font-semibold">Consecutive occurrence</b>
-          <span class="text-[11px] text-muted-foreground">Only trigger when this condition is met multiple times in a row</span>
+          <b class="block text-[12.5px] font-semibold">Repeated</b>
+          <span class="text-[11px] text-muted-foreground">Only trigger when this condition is met more than once</span>
         </div>
       </div>
       ${repeatMore}` : ''}
     </div>`;
+}
+
+// Plain, non-interactive summary of a rule's conditions — swapped in for the
+// full comboboxHTML-based builder above when viewing a frozen Staging/
+// Production snapshot, where none of those widgets can actually be edited.
+function renderConditionsReadOnly(conditions){
+  if(!conditions || !conditions.length){
+    return `<div class="text-[12px] italic text-muted-foreground/70">No conditions defined.</div>`;
+  }
+  return conditions.map((c, idx) => {
+    const sig = signalMeta(c.signal);
+    const op = OPERATORS_FLAT.find(o => o.value === c.operator);
+    const valueKind = operatorValueKind(c.operator);
+    const joinBadge = idx > 0
+      ? `<div class="my-1 flex justify-center"><span class="rounded-md border bg-white px-3 py-0.5 text-[11px] font-bold tracking-wide text-muted-foreground">${c.join}</span></div>`
+      : '';
+    let repeatLine = '';
+    if(c.repeated){
+      const scopeText = c.repeatScope === 'consecutive' ? 'consecutively' : 'anywhere in the conversation';
+      repeatLine = `<div class="mt-1 text-[11px] text-muted-foreground">Repeated more than ${c.repeatCount} time${c.repeatCount>1?'s':''}, ${scopeText}</div>`;
+    }
+    return `${joinBadge}
+      <div class="mb-2.5 rounded-lg border bg-zinc-50/60 p-3.5 text-[12.5px]">
+        <span class="font-semibold">${sig ? sig.label : '—'}</span>
+        <span class="text-muted-foreground"> ${op ? op.label : '—'}</span>${valueKind && c.value ? ` <span class="font-semibold">“${c.value}”</span>` : ''}
+        ${repeatLine}
+      </div>`;
+  }).join('');
+}
+
+/* ---------------- Concept 2: block-based condition builder ----------------
+   Simplified "Define rule" alternative built from the grouped-condition idea:
+   conditions live in one or more "blocks" (sections), each independently
+   toggled between ALL-of (AND within it) and ANY-of (OR within it) — a
+   selection, not fixed text — chained to the next block by its own AND/OR.
+   A rule starts with exactly one block; "+ Add condition block" appends
+   another, up to 4 total, each capped at 4 conditions like Concept 1. */
+function renderSectionConditionBox(sIdx, cnd, cIdx, total){
+  const closeBtn = total > 1
+    ? `<button class="absolute right-2.5 top-2.5 z-20 flex h-5 w-5 items-center justify-center rounded border bg-white text-muted-foreground shadow-sm hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive" onclick="removeSectionCondition(${sIdx},${cIdx})">${ICON.x}</button>` : '';
+
+  const REPEAT_SCOPES = [
+    {value:'any', label:'Repeated more than once in the whole conversation'},
+    {value:'consecutive', label:'Repeated consecutively for more than once'},
+  ];
+  const repeatMore = cnd.repeated ? `
+    <div class="ml-6 mt-2.5 flex flex-col gap-1.5">
+      ${REPEAT_SCOPES.map(o => {
+        const sel = (cnd.repeatScope || 'any') === o.value;
+        return `
+        <div class="flex cursor-pointer items-center gap-2" onclick="setSectionCondRepeatScope(${sIdx},${cIdx},'${o.value}')">
+          <span class="flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border ${sel?'border-primary':'border-input bg-white'}">${sel?'<span class="h-2 w-2 rounded-full bg-primary"></span>':''}</span>
+          <span class="text-[12px] ${sel?'font-medium text-foreground':'text-muted-foreground'}">${o.label}</span>
+        </div>`;
+      }).join('')}
+      <div class="mt-1 flex items-center gap-2 text-[12px] text-muted-foreground">
+        More than
+        <div class="inline-flex items-center overflow-hidden rounded-md border">
+          <button class="flex h-6 w-6 items-center justify-center text-muted-foreground hover:bg-accent" onclick="changeSectionCondRepeatCount(${sIdx},${cIdx},-1)">${ICON.minus}</button>
+          <div class="w-7 text-center text-[12.5px] font-semibold">${cnd.repeatCount}</div>
+          <button class="flex h-6 w-6 items-center justify-center text-muted-foreground hover:bg-accent" onclick="changeSectionCondRepeatCount(${sIdx},${cIdx},1)">${ICON.plus}</button>
+        </div>
+        ${cnd.repeatScope === 'consecutive' ? `consecutive time${cnd.repeatCount>1?'s':''} in a row` : `time${cnd.repeatCount>1?'s':''} in this conversation`}
+      </div>
+    </div>` : '';
+
+  const valueKind = operatorValueKind(cnd.operator);
+  const valueField = valueKind ? `
+      <input class="h-9 w-[130px] flex-shrink-0 rounded-md border border-input bg-white px-3 text-[13px] shadow-sm outline-none focus:ring-1 focus:ring-ring" type="${valueKind==='number'?'number':'text'}"
+        placeholder="Value" value="${(cnd.value||'').replace(/"/g,'&quot;')}"
+        oninput="setSectionCondValue(${sIdx},${cIdx}, this.value)">` : '';
+
+  const sigCategory = signalCategoryLabel(cnd.signal);
+  const operatorGroups = operatorGroupsForSignal(cnd.signal);
+  const comboBase = sIdx + '-' + cIdx;
+
+  return `
+    <div class="relative mb-2.5 rounded-lg border bg-white p-3.5 ${total > 1 ? 'pr-9' : ''}">
+      ${closeBtn}
+      <div class="mb-2.5 flex flex-wrap gap-2">
+        ${comboboxHTML('sig2-'+comboBase, getSignalGroups(), cnd.signal, getSignalsFlat(), 'Select signal', 'flex-1 min-w-[180px]')}
+        ${comboboxHTML('op2-'+comboBase, operatorGroups, cnd.operator, OPERATORS_FLAT, 'Operator', 'w-[200px] flex-shrink-0')}
+        ${valueField}
+      </div>
+      ${sigCategory && sigCategory !== 'Input guardrails' ? `<div class="mb-2.5 -mt-1.5 text-[11px] text-muted-foreground">System signals don’t support Detection — choose a Boolean, Number, or Text operator.</div>` : ''}
+      ${isDetectionOperator(cnd.operator) ? `
+      <div class="flex items-start gap-2">
+        ${checkboxHTML(cnd.repeated, `toggleSectionCondRepeated(${sIdx},${cIdx})`)}
+        <div class="cursor-pointer" onclick="toggleSectionCondRepeated(${sIdx},${cIdx})">
+          <b class="block text-[12.5px] font-semibold">Repeated</b>
+          <span class="text-[11px] text-muted-foreground">Only trigger when this condition is met more than once</span>
+        </div>
+      </div>
+      ${repeatMore}` : ''}
+    </div>`;
+}
+function renderConditionSection(sIdx, section, totalSections){
+  const mode = section.mode || 'all';
+  const removeBtn = totalSections > 1
+    ? `<button class="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border bg-white text-muted-foreground shadow-sm hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive" onclick="removeConditionSection(${sIdx})" title="Remove this condition block">${ICON.x}</button>`
+    : '';
+  const conditions = section.conditions || [];
+  const rows = conditions.length
+    ? conditions.map((c,cIdx)=>renderSectionConditionBox(sIdx, c, cIdx, conditions.length)).join('')
+    : `<div class="mb-1 rounded-lg border border-dashed bg-white px-3.5 py-3 text-center text-[12px] italic text-muted-foreground/70">No conditions yet.</div>`;
+  return `
+    <div class="rounded-lg border bg-zinc-50/60 p-3.5">
+      <div class="mb-3 flex items-center justify-between gap-2">
+        <div class="inline-flex overflow-hidden rounded-md border">
+          <div class="cursor-pointer px-3 py-1.5 text-[12.5px] font-semibold ${mode==='any'?'text-muted-foreground hover:bg-accent':'bg-primary text-primary-foreground'}" onclick="setSectionMode(${sIdx},'all')">All of these must be true</div>
+          <div class="cursor-pointer px-3 py-1.5 text-[12.5px] font-semibold ${mode==='any'?'bg-primary text-primary-foreground':'text-muted-foreground hover:bg-accent'}" onclick="setSectionMode(${sIdx},'any')">Any one of these is true</div>
+        </div>
+        ${removeBtn}
+      </div>
+      ${rows}
+      <button class="mt-1 inline-flex items-center gap-1.5 rounded-md border border-dashed bg-white px-3 py-1.5 text-[12.5px] font-semibold hover:bg-accent" onclick="addSectionCondition(${sIdx})">${ICON.plus} Add condition</button>
+    </div>`;
+}
+function joinToggleHTML(gj, onAndClick, onOrClick){
+  return `
+    <div class="my-2.5 flex justify-center">
+      <div class="inline-flex overflow-hidden rounded-md border">
+        <div class="cursor-pointer px-4 py-1 text-[11px] font-bold tracking-wide ${gj==='OR'?'text-muted-foreground hover:bg-accent':'bg-primary text-primary-foreground'}" onclick="${onAndClick}">AND</div>
+        <div class="cursor-pointer px-4 py-1 text-[11px] font-bold tracking-wide ${gj==='OR'?'bg-primary text-primary-foreground':'text-muted-foreground hover:bg-accent'}" onclick="${onOrClick}">OR</div>
+      </div>
+    </div>`;
+}
+function renderDefineRuleConcept2(groups){
+  const sections = (groups && groups.sections && groups.sections.length) ? groups.sections : [{mode:'all',join:'AND',conditions:[]}];
+  const sectionsHTML = sections.map((s, sIdx) => {
+    const box = renderConditionSection(sIdx, s, sections.length);
+    if(sIdx === 0) return box;
+    return joinToggleHTML(s.join || 'AND', `setSectionJoin(${sIdx},'AND')`, `setSectionJoin(${sIdx},'OR')`) + box;
+  }).join('');
+  const addBlockBtn = sections.length >= 4 ? '' : `
+    <button class="mt-2.5 inline-flex items-center gap-1.5 rounded-md border border-dashed bg-white px-3 py-1.5 text-[12.5px] font-semibold hover:bg-accent" onclick="addConditionSection()">${ICON.plus} Add condition block</button>`;
+  return `${sectionsHTML}${addBlockBtn}`;
+}
+// Read-only counterpart of renderDefineRuleConcept2, for a frozen Staging/
+// Production snapshot — same plain-text treatment as renderConditionsReadOnly.
+function renderConditionGroupsReadOnly(groups){
+  const sections = (groups && groups.sections) || [];
+  const nonEmpty = sections.filter(s => (s.conditions||[]).length);
+  if(!nonEmpty.length){
+    return `<div class="text-[12px] italic text-muted-foreground/70">No conditions defined.</div>`;
+  }
+  return sections.map((s, sIdx) => {
+    const list = s.conditions || [];
+    if(!list.length) return '';
+    const innerJoin = s.mode === 'any' ? 'OR' : 'AND';
+    const modeLabel = s.mode === 'any' ? 'Any one of these is true' : 'All of these must be true';
+    const sectionJoinBadge = sIdx > 0
+      ? `<div class="my-1 flex justify-center"><span class="rounded-md border bg-white px-3 py-0.5 text-[11px] font-bold tracking-wide text-muted-foreground">${s.join || 'AND'}</span></div>`
+      : '';
+    const rows = list.map((c, cIdx) => {
+      const sig = signalMeta(c.signal);
+      const op = OPERATORS_FLAT.find(o => o.value === c.operator);
+      const valueKind = operatorValueKind(c.operator);
+      const innerBadge = cIdx > 0
+        ? `<div class="my-1 flex justify-center"><span class="rounded-md border bg-white px-3 py-0.5 text-[11px] font-bold tracking-wide text-muted-foreground">${innerJoin}</span></div>`
+        : '';
+      let repeatLine = '';
+      if(c.repeated){
+        const scopeText = c.repeatScope === 'consecutive' ? 'consecutively' : 'anywhere in the conversation';
+        repeatLine = `<div class="mt-1 text-[11px] text-muted-foreground">Repeated more than ${c.repeatCount} time${c.repeatCount>1?'s':''}, ${scopeText}</div>`;
+      }
+      return `${innerBadge}
+        <div class="mb-2.5 rounded-lg border bg-zinc-50/60 p-3.5 text-[12.5px]">
+          <span class="font-semibold">${sig ? sig.label : '—'}</span>
+          <span class="text-muted-foreground"> ${op ? op.label : '—'}</span>${valueKind && c.value ? ` <span class="font-semibold">“${c.value}”</span>` : ''}
+          ${repeatLine}
+        </div>`;
+    }).join('');
+    return `${sectionJoinBadge}<div class="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">${modeLabel}</div>${rows}`;
+  }).join('');
 }
 
 function renderActionBlock(a, idx){
@@ -1668,28 +1994,67 @@ function renderDetail(){
   // extra default-rule lock layered on top of the base editable/read-only state.
   const actionsLocked = !view.editable;
   const conditionsLocked = !view.conditionsEditable;
-
-  const conditionsHTML = view.conditions.map((c,idx)=>{
-    const box = renderConditionBox(c, idx, view.conditions.length);
-    if(idx === 0) return box;
-    // Each junction between conditions has its own independent AND/OR choice
-    // — picking OR here doesn't force every other junction in the list to OR.
-    return `
-      <div class="my-1 flex justify-center">
-        <div class="inline-flex overflow-hidden rounded-md border">
-          <div class="cursor-pointer px-3.5 py-1 text-[11px] font-bold tracking-wide ${c.join==='OR'?'text-muted-foreground hover:bg-accent':'bg-primary text-primary-foreground'}" onclick="setConditionJoin(${idx}, 'AND')">AND</div>
-          <div class="cursor-pointer px-3.5 py-1 text-[11px] font-bold tracking-wide ${c.join==='OR'?'bg-primary text-primary-foreground':'text-muted-foreground hover:bg-accent'}" onclick="setConditionJoin(${idx}, 'OR')">OR</div>
-        </div>
-      </div>${box}`;
-  }).join('');
-
-  const actionsHTML = view.actions.map((a,idx)=>renderActionBlock(a, idx)).join('');
+  // Staging/Production cards are frozen snapshots — nothing on the "Define
+  // rule" card can be edited there, so it renders as a plain summary instead
+  // of the interactive builder (which would otherwise show fully-styled,
+  // merely-disabled dropdowns and buttons).
+  const isSnapshotView = draftRule.viewing !== 'draft';
 
   // Reset to default only ever touches the rule's conditions (never Actions),
   // so the control lives on the "Define rule" card itself rather than in the
   // bottom action bar — it only makes sense while that card is actually live.
   const resetDefBtn = (draftRule.status === 'draft' && isDefinitionEditedFromDefault(draftRule))
     ? `<button class="${btnClass('secondary','sm')}" onclick="resetToDefault()">Reset to default</button>` : '';
+
+  let defineRuleHeaderRight, defineRuleBody;
+  if(uiConcept === 'concept2'){
+    // Concept 2: simplified grouped condition builder — no builder/expression
+    // toggle, just the two-group structure (see renderDefineRuleConcept2).
+    defineRuleHeaderRight = isSnapshotView ? '' : `<div class="flex items-center gap-2">${resetDefBtn}</div>`;
+    defineRuleBody = isSnapshotView
+      ? renderConditionGroupsReadOnly(view.conditionGroups)
+      : renderDefineRuleConcept2(view.conditionGroups);
+  } else {
+    const conditionsHTML = isSnapshotView
+      ? renderConditionsReadOnly(view.conditions)
+      : view.conditions.map((c,idx)=>{
+          const box = renderConditionBox(c, idx, view.conditions.length);
+          if(idx === 0) return box;
+          // Each junction between conditions has its own independent AND/OR
+          // choice — picking OR here doesn't force every junction to OR.
+          return `
+            <div class="my-1 flex justify-center">
+              <div class="inline-flex overflow-hidden rounded-md border">
+                <div class="cursor-pointer px-3.5 py-1 text-[11px] font-bold tracking-wide ${c.join==='OR'?'text-muted-foreground hover:bg-accent':'bg-primary text-primary-foreground'}" onclick="setConditionJoin(${idx}, 'AND')">AND</div>
+                <div class="cursor-pointer px-3.5 py-1 text-[11px] font-bold tracking-wide ${c.join==='OR'?'bg-primary text-primary-foreground':'text-muted-foreground hover:bg-accent'}" onclick="setConditionJoin(${idx}, 'OR')">OR</div>
+              </div>
+            </div>${box}`;
+        }).join('');
+
+    const expressionHTML = isSnapshotView
+      ? `<div class="rounded-md border bg-zinc-50/60 px-3.5 py-2.5 text-[13px] leading-relaxed" style="white-space:pre-wrap">${view.expression ? view.expression : '<span class="italic text-muted-foreground/70">No expression defined.</span>'}</div>`
+      : `<div class="mb-3 text-[11.5px] text-muted-foreground">Write the trigger logic directly as an expression.</div>
+      <textarea class="h-32 w-full resize-none rounded-md border border-input bg-white px-3 py-2 text-[13px] leading-relaxed shadow-sm outline-none focus:ring-1 focus:ring-ring" placeholder="COUNT(variable['pnr'] WHERE value == PREVIOUS(value)) >= 3" oninput="setExpression(this.value)">${view.expression||''}</textarea>`;
+
+    // The builder/expression toggle and "+ Add" affordance only make sense
+    // while the card is actually editable — hide them on a read-only snapshot.
+    defineRuleHeaderRight = isSnapshotView ? '' : `
+      <div class="flex items-center gap-2">
+        ${resetDefBtn}
+        <div class="inline-flex items-center gap-1 rounded-md border p-1">
+          <button class="flex h-6 w-6 items-center justify-center rounded ${view.conditionMode!=='expression'?'bg-accent text-foreground':'text-muted-foreground hover:bg-accent/60'}" title="Condition builder" onclick="setConditionMode('builder')">${ICON.formMode}</button>
+          <button class="flex h-6 w-6 items-center justify-center rounded ${view.conditionMode==='expression'?'bg-accent text-foreground':'text-muted-foreground hover:bg-accent/60'}" title="Write as expression" onclick="setConditionMode('expression')">${ICON.codeMode}</button>
+        </div>
+      </div>`;
+    defineRuleBody = view.conditionMode === 'expression'
+      ? expressionHTML
+      : (isSnapshotView ? conditionsHTML : `
+      <div class="mb-3 text-[11.5px] text-muted-foreground">Add one or more conditions this rule should watch for. Detection operators are only available for Input guardrail signals.</div>
+      ${conditionsHTML}
+      <button class="mt-1 inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-1.5 text-[12.5px] font-semibold hover:bg-accent" onclick="addCondition()">${ICON.plus} Add</button>`);
+  }
+
+  const actionsHTML = view.actions.map((a,idx)=>renderActionBlock(a, idx)).join('');
 
   let bottomButtons = '';
   if(draftRule.status === 'draft'){
@@ -1760,26 +2125,13 @@ function renderDetail(){
 
         ${lockBanner}
 
-        <div ${conditionsLocked?'data-locked="true"':''}>
+        <div ${conditionsLocked && !isSnapshotView ? 'data-locked="true"' : ''}>
           <div class="mb-3.5 rounded-lg border bg-white p-4 shadow-sm">
             <div class="mb-0.5 flex items-center justify-between gap-2">
               <h4 class="text-[13px] font-semibold">Define rule</h4>
-              <div class="flex items-center gap-2">
-                ${resetDefBtn}
-                <div class="inline-flex items-center gap-1 rounded-md border p-1">
-                  <button class="flex h-6 w-6 items-center justify-center rounded ${view.conditionMode!=='expression'?'bg-accent text-foreground':'text-muted-foreground hover:bg-accent/60'}" title="Condition builder" onclick="setConditionMode('builder')">${ICON.formMode}</button>
-                  <button class="flex h-6 w-6 items-center justify-center rounded ${view.conditionMode==='expression'?'bg-accent text-foreground':'text-muted-foreground hover:bg-accent/60'}" title="Write as expression" onclick="setConditionMode('expression')">${ICON.codeMode}</button>
-                </div>
-              </div>
+              ${defineRuleHeaderRight}
             </div>
-            ${view.conditionMode === 'expression' ? `
-            <div class="mb-3 text-[11.5px] text-muted-foreground">Write the trigger logic directly as an expression.</div>
-            <textarea class="h-32 w-full resize-none rounded-md border border-input bg-white px-3 py-2 text-[13px] leading-relaxed shadow-sm outline-none focus:ring-1 focus:ring-ring" placeholder="COUNT(variable['pnr'] WHERE value == PREVIOUS(value)) >= 3" oninput="setExpression(this.value)">${view.expression||''}</textarea>
-            ` : `
-            <div class="mb-3 text-[11.5px] text-muted-foreground">Add one or more conditions this rule should watch for. Detection operators are only available for Input guardrail signals.</div>
-            ${conditionsHTML}
-            <button class="mt-1 inline-flex items-center gap-1.5 rounded-md border border-dashed px-3 py-1.5 text-[12.5px] font-semibold hover:bg-accent" onclick="addCondition()">${ICON.plus} Add</button>
-            `}
+            ${defineRuleBody}
           </div>
         </div>
 
